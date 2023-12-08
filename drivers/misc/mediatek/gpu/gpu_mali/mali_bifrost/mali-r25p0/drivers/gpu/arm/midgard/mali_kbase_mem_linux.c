@@ -881,6 +881,15 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 	if (kbase_is_region_invalid_or_free(reg))
 		goto out_unlock;
 
+	/* There is no use case to support MEM_FLAGS_CHANGE ioctl for allocations
+	 * that have NO_USER_FREE flag set, to mark them as evictable/reclaimable.
+	 * This would usually include JIT allocations, Tiler heap related allocations
+	 * & GPU queue ringbuffer and none of them needs to be explicitly marked
+	 * as evictable by Userspace.
+	 */
+	if (reg->flags & KBASE_REG_NO_USER_FREE)
+		goto out_unlock;
+
 	/* Is the region being transitioning between not needed and needed? */
 	prev_needed = (KBASE_REG_DONT_NEED & reg->flags) == KBASE_REG_DONT_NEED;
 	new_needed = (BASE_MEM_DONT_NEED & flags) == BASE_MEM_DONT_NEED;
@@ -892,6 +901,9 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 		 *   (==GPU VA) locations.
 		 */
 		if (atomic_read(&reg->cpu_alloc->gpu_mappings) > 1)
+			goto out_unlock;
+
+		if (atomic_read(&reg->cpu_alloc->kernel_mappings) > 0)
 			goto out_unlock;
 
 		if (new_needed) {
@@ -2140,9 +2152,15 @@ int kbase_mem_commit(struct kbase_context *kctx, u64 gpu_addr, u64 new_pages)
 	 */
 	if (atomic_read(&reg->gpu_alloc->gpu_mappings) > 1)
 		goto out_unlock;
+
+	if (atomic_read(&reg->cpu_alloc->kernel_mappings) > 0)
+		goto out_unlock;
 	/* can't grow regions which are ephemeral */
 	if (reg->flags & KBASE_REG_DONT_NEED)
 		goto out_unlock;
+
+       if (reg->flags & KBASE_REG_NO_USER_FREE)
+               goto out_unlock;
 
 #ifdef CONFIG_MALI_MEMORY_FULLY_BACKED
 	/* Reject resizing commit size */
@@ -2925,6 +2943,7 @@ static int kbase_vmap_phy_pages(struct kbase_context *kctx,
 	if (map->sync_needed)
 		kbase_sync_mem_regions(kctx, map, KBASE_SYNC_TO_CPU);
 
+	kbase_mem_phy_alloc_kernel_mapped(reg->cpu_alloc);
 	return 0;
 }
 
@@ -2994,6 +3013,7 @@ static void kbase_vunmap_phy_pages(struct kbase_context *kctx,
 	if (map->sync_needed)
 		kbase_sync_mem_regions(kctx, map, KBASE_SYNC_TO_DEVICE);
 
+	kbase_mem_phy_alloc_kernel_unmapped(map->cpu_alloc);
 	map->offset_in_page = 0;
 	map->cpu_pages = NULL;
 	map->gpu_pages = NULL;

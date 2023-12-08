@@ -3622,37 +3622,6 @@ static int _ovl_fence_release_callback(unsigned long userdata)
 #endif
 	_primary_path_unlock(__func__);
 
-	/* check last ovl status: should be idle when config */
-	if (primary_display_is_video_mode() &&
-		!primary_display_is_decouple_mode()) {
-		unsigned int status;
-
-		cmdqBackupReadSlot(pgc->ovl_status_info, 0, &status);
-#ifdef DEBUG_OVL_CONFIG_TIME
-		unsigned int time_event = 0;
-		unsigned int time_event1 = 0;
-		unsigned int time_event2 = 0;
-
-		cmdqBackupReadSlot(pgc->ovl_config_time, 0, &time_event);
-		cmdqBackupReadSlot(pgc->ovl_config_time, 1, &time_event1);
-		cmdqBackupReadSlot(pgc->ovl_config_time, 2, &time_event2);
-		DISPMSG(
-			"ovl config time_event %d time_event1 %d time_event2 %d time1_diff  %d  time2_diff %d\n",
-			time_event, time_event1, time_event2,
-			time_event1 - time_event, time_event2 - time_event1);
-#endif
-		if (status & 0x1) {
-			/* ovl is not idle !! */
-			DISPERR("disp ovl status error!! stat=0x%x\n",
-			status);
-			/* disp_aee_print("ovl_stat 0x%x\n", status); */
-			mmprofile_log_ex(ddp_mmp_get_events()->primary_error,
-					 MMPROFILE_FLAG_PULSE, status, 0);
-			primary_display_diagnose();
-			ret = -1;
-		}
-	}
-
 	for (i = 0; i < PRIMARY_SESSION_INPUT_LAYER_COUNT; i++) {
 		int fence_idx = 0;
 		int subtractor = 0;
@@ -8711,9 +8680,11 @@ int _set_lcm_cmd_by_cmdq(unsigned int *lcm_cmd, unsigned int *lcm_count,
 		mmprofile_log_ex(ddp_mmp_get_events()->primary_set_cmd,
 			MMPROFILE_FLAG_PULSE, 1, 2);
 		cmdqRecReset(cmdq_handle_lcm_cmd);
+		_cmdq_insert_wait_frame_done_token_mira(cmdq_handle_lcm_cmd);
 		disp_lcm_set_lcm_cmd(pgc->plcm, cmdq_handle_lcm_cmd, lcm_cmd,
 			lcm_count, lcm_value);
-		_cmdq_flush_config_handle_mira(cmdq_handle_lcm_cmd, 1);
+		/*Async flush by cmdq*/
+		_cmdq_flush_config_handle_mira(cmdq_handle_lcm_cmd, 0);
 		DISPCHECK("[CMD]%s ret=%d\n", __func__, ret);
 	} else {
 		mmprofile_log_ex(ddp_mmp_get_events()->primary_set_bl,
@@ -8755,8 +8726,8 @@ int primary_display_setlcm_cmd(unsigned int *lcm_cmd, unsigned int *lcm_count,
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_set_cmd,
 		MMPROFILE_FLAG_START, 0, 0);
 
-	_primary_path_switch_dst_lock();
-	_primary_path_lock(__func__);
+	_primary_path_switch_dst_unlock();
+	_primary_path_unlock(__func__);
 
 	if (pgc->state == DISP_SLEPT) {
 		DISPCHECK("Sleep State set backlight invalid\n");
